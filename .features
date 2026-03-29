@@ -1,0 +1,20 @@
+Pacioli – Core Prototype Features
+✅ What It Does
+Position Awareness
+Player & entity positions
+Cached and consistent
+Distance & Radius Logic
+Fast proximity checks
+Minimal redundant calculations
+State Tracking
+Health (basic)
+Movement flags (future)
+Consistency Layer
+Deterministic outputs
+No jitter or inconsistent logic
+
+❌ What It Does NOT Do
+UI elements (no screens, overlays, title cards)
+Items or blocks (no world modification)
+Boss-specific logic or AI behaviors
+Fancy physics (PID, impulses, angular momentum, etc.)
