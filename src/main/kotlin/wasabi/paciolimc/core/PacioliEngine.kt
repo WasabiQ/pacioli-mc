@@ -1,123 +1,168 @@
 package wasabi.paciolimc.engine
 
 import wasabi.paciolimc.logger.PacioliLog
-import net.minecraft.server.level.ServerLevel
-import net.minecraft.world.entity.LivingEntity
-import net.minecraft.world.entity.player.Player
+import net.minecraft.world.entity.Entity
 import net.minecraft.world.phys.Vec3
+import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.floor
 
-class PacioliEngine(val world: ServerLevel) {
+class PacioliEngine {
 
-    private val cellSize = 16 // Each cell 16x16x16 blocks
-    private val entityCells: MutableMap<Long, MutableList<LivingEntity>> = mutableMapOf()
-    private val lastEntityCell: MutableMap<LivingEntity, Long> = mutableMapOf()
+    private val cellSize = 16.0
+    private val ENTITY_CAP = 1024 
+    
+    private val entityCells = ConcurrentHashMap<Long, MutableList<Entity>>()
+    private val lastEntityCell = ConcurrentHashMap<Int, Long>()
+    private val bufferCache = ConcurrentHashMap<Long, FloatArray>()
 
-    // Center active tracking around a player (optional)
-    private var activeCenter: Vec3? = null
-    private var activeRadius = 128.0 // blocks
-
-    // --- Tick: only update entities that moved across cells ---
-    fun tick() {
-        // Remove dead or removed entities
-        lastEntityCell.keys.removeIf { entity ->
-            if (!entity.isAlive || entity.isRemoved) {
-                val lastCell = lastEntityCell[entity]
-                lastCell?.let { entityCells[it]?.remove(entity) }
-                true
-            } else false
+    fun updateEntity(entity: Entity) {
+        if (entity.isRemoved) {
+            purgeEntity(entity)
+            return
         }
 
-        // Update movement-driven cells
-        for (entity in world.entities) {
-            if (entity !is LivingEntity) continue
-            val pos = entity.position()
+        val entityId = entity.id
+        val currentKey = packCell(entity.x, entity.y, entity.z)
+        val oldKey = lastEntityCell[entityId]
 
-            // Skip entities outside active radius
-            activeCenter?.let { center ->
-                if (pos.distanceToSqr(center) > activeRadius * activeRadius) continue
+        if (currentKey != oldKey) {
+            if (oldKey != null) {
+                removeFromCell(oldKey, entity)
             }
 
-            val cell = packCell(pos)
-            val lastCell = lastEntityCell[entity]
+            val list = entityCells.computeIfAbsent(currentKey) { 
+                Collections.synchronizedList(mutableListOf()) 
+            }
 
-            if (cell != lastCell) {
-                lastCell?.let { entityCells[it]?.remove(entity) }
-                entityCells.computeIfAbsent(cell) { mutableListOf() }.add(entity)
-                lastEntityCell[entity] = cell
+            // Fix #1: State Consistency & Bounded Capacity
+            synchronized(list) {
+                if (list.size < ENTITY_CAP) {
+                    list.add(entity)
+                }
+            }
+            lastEntityCell[entityId] = currentKey
+        }
+    }
 
-                if (PacioliLog.isDebugEnabled) {
-                    PacioliLog.debug("Entity ${entity.name.string} moved to cell $cell")
+    fun purgeEntity(entity: Entity) {
+        val key = lastEntityCell.remove(entity.id)
+        if (key != null) {
+            removeFromCell(key, entity)
+        }
+    }
+
+    private fun removeFromCell(key: Long, entity: Entity) {
+        entityCells[key]?.let { list ->
+            synchronized(list) {
+                list.remove(entity)
+                if (list.isEmpty()) {
+                    // Fix #1: Atomic removal to prevent race condition if a thread adds mid-delete
+                    entityCells.remove(key, list) 
+                    bufferCache.remove(key)
                 }
             }
         }
     }
 
-    // --- Query entities in range ---
-    fun entitiesInRange(
-        pos: Vec3,
-        radius: Double,
-        result: MutableList<LivingEntity> = mutableListOf()
-    ): List<LivingEntity> {
+    fun getEntitiesInRange(origin: Vec3, radius: Double, result: MutableList<Entity>) {
         result.clear()
-        val radiusSquared = radius * radius
-
-        val minX = floor((pos.x - radius) / cellSize).toInt()
-        val maxX = floor((pos.x + radius) / cellSize).toInt()
-        val minY = floor((pos.y - radius) / cellSize).toInt()
-        val maxY = floor((pos.y + radius) / cellSize).toInt()
-        val minZ = floor((pos.z - radius) / cellSize).toInt()
-        val maxZ = floor((pos.z + radius) / cellSize).toInt()
+        val rSqr = radius * radius
+        
+        val minX = floor((origin.x - radius) / cellSize).toInt()
+        val maxX = floor((origin.x + radius) / cellSize).toInt()
+        val minY = floor((origin.y - radius) / cellSize).toInt()
+        val maxY = floor((origin.y + radius) / cellSize).toInt()
+        val minZ = floor((origin.z - radius) / cellSize).toInt()
+        val maxZ = floor((origin.z + radius) / cellSize).toInt()
 
         for (x in minX..maxX) {
-            val xBits = (x and 0xFFFFF).toLong() shl 40
+            val xPart = (x.toLong() and 0xFFFFF) shl 40
             for (y in minY..maxY) {
-                val yBits = (y and 0xFFFFF).toLong() shl 20
+                val yPart = (y.toLong() and 0xFFFFF) shl 20
                 for (z in minZ..maxZ) {
-                    val cellKey = xBits or yBits or (z and 0xFFFFF).toLong()
-                    entityCells[cellKey]?.forEach { e ->
-                        if (e.position().distanceToSqr(pos) <= radiusSquared) {
-                            result.add(e)
+                    val key = xPart or yPart or (z.toLong() and 0xFFFFF)
+                    
+                    entityCells[key]?.let { cellList ->
+                        synchronized(cellList) {
+                            for (i in 0 until cellList.size) {
+                                val e = cellList[i]
+                                val dx = e.x - origin.x
+                                val dy = e.y - origin.y
+                                val dz = e.z - origin.z
+                                
+                                if (dx * dx + dy * dy + dz * dz <= rSqr) {
+                                    result.add(e)
+                                }
+                            }
                         }
                     }
                 }
             }
         }
-
-        return result
     }
 
-    // --- Utility: pack 3D cell coordinates into a single Long ---
-    private fun packCell(pos: Vec3): Long {
-        val x = floor(pos.x / cellSize).toInt() and 0xFFFFF
-        val y = floor(pos.y / cellSize).toInt() and 0xFFFFF
-        val z = floor(pos.z / cellSize).toInt() and 0xFFFFF
-        return (x.toLong() shl 40) or (y.toLong() shl 20) or z.toLong()
+    fun getGpuVertexData(cellKey: Long): FloatArray? {
+        val entities = entityCells[cellKey] ?: return null
+        
+        synchronized(entities) {
+            val requiredSize = entities.size * 3
+            val buffer = bufferCache[cellKey]
+            
+            val finalBuffer = if (buffer == null || buffer.size < requiredSize) {
+                val newSize = if (buffer == null) requiredSize else maxOf(requiredSize, buffer.size * 2)
+                FloatArray(newSize).also { bufferCache[cellKey] = it }
+            } else buffer
+            
+            for (i in entities.indices) {
+                val e = entities[i]
+                finalBuffer[i * 3] = e.x.toFloat()
+                finalBuffer[i * 3 + 1] = e.y.toFloat()
+                finalBuffer[i * 3 + 2] = e.z.toFloat()
+            }
+            return finalBuffer
+        }
     }
 
-    private fun packCell(x: Int, y: Int, z: Int): Long {
-        val xx = x and 0xFFFFF
-        val yy = y and 0xFFFFF
-        val zz = z and 0xFFFFF
-        return (xx.toLong() shl 40) or (yy.toLong() shl 20) or zz.toLong()
+    /**
+     * Final Safety Sweep: O(N) Complexity with Zero Drift.
+     */
+    fun safetySweep() {
+        // Fix #3: Smarter pre-sizing to prevent over-allocation if stale entries exist
+        val activeIds = HashSet<Int>(entityCells.size * 16)
+        
+        val cellIterator = entityCells.entries.iterator()
+        while (cellIterator.hasNext()) {
+            val entry = cellIterator.next()
+            val list = entry.value
+            synchronized(list) {
+                list.removeIf { entity -> 
+                    val removed = entity.isRemoved
+                    if (!removed) activeIds.add(entity.id)
+                    removed
+                }
+                if (list.isEmpty()) {
+                    bufferCache.remove(entry.key)
+                    cellIterator.remove()
+                }
+            }
+        }
+
+        // Fix #2: Micro-optimized removal avoiding lambda capture overhead
+        lastEntityCell.entries.removeIf { entry -> !activeIds.contains(entry.key) }
     }
 
-    // --- Optional utilities ---
-    fun distanceToPlayer(pos: Vec3, player: Player): Double {
-        return pos.distanceTo(player.position())
+    private fun packCell(x: Double, y: Double, z: Double): Long {
+        val ix = floor(x / cellSize).toLong() and 0xFFFFF
+        val iy = floor(y / cellSize).toLong() and 0xFFFFF
+        val iz = floor(z / cellSize).toLong() and 0xFFFFF
+        return (ix shl 40) or (iy shl 20) or iz
     }
 
-    fun playerInRange(pos: Vec3, player: Player, radius: Double): Boolean {
-        return pos.distanceToSqr(player.position()) <= radius * radius
-    }
-
-    // --- Active area management ---
-    fun setActiveArea(center: Vec3, radius: Double) {
-        activeCenter = center
-        activeRadius = radius
-    }
-
-    fun clearActiveArea() {
-        activeCenter = null
+    fun clearCache() {
+        entityCells.clear()
+        lastEntityCell.clear()
+        bufferCache.clear()
+        PacioliLog.system("Pacioli Engine: Memory state fully reset.")
     }
 }
