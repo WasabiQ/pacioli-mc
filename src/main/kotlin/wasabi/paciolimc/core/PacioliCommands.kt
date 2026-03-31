@@ -1,83 +1,103 @@
 package wasabi.paciolimc.commands
 
+import com.mojang.brigadier.CommandDispatcher
 import com.mojang.brigadier.arguments.IntegerArgumentType
 import com.mojang.brigadier.arguments.StringArgumentType
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
+import net.minecraft.command.CommandRegistryAccess
 import net.minecraft.server.command.CommandManager.*
 import net.minecraft.server.command.ServerCommandSource
 import net.minecraft.text.Text
-import wasabi.paciolimc.engine.PacioliEngine
-import wasabi.paciolimc.logger.PacioliLog
 import net.minecraft.entity.Entity
 import net.minecraft.registry.Registries
 import net.minecraft.util.Identifier
-import net.minecraft.world.phys.Vec3
+import net.minecraft.util.math.Vec3d
+import wasabi.paciolimc.engine.PacioliEngine
 import java.util.ArrayList
 
+/**
+ * Pacioli Control Suite - Alpha 1.2
+ * Handles engine diagnostics, mass-stress testing, and diagnostic toggles.
+ */
 object PacioliCommands {
 
     private var engine: PacioliEngine? = null
+    
+    @JvmStatic
     var breadcrumbsEnabled = false
+        private set
 
     fun init() {
         CommandRegistrationCallback.EVENT.register { dispatcher, _, _ ->
-            dispatcher.register(
-                literal("pacioli")
-                    .requires { it.hasPermissionLevel(2) }
-                    // All commands now follow the same Dev Environment restriction for consistency
-                    .then(literal("status").executes { if (isDev(it.source)) checkStatus(it.source) else 0 })
-                    .then(literal("sweep").executes { if (isDev(it.source)) triggerManualSweep(it.source) else 0 })
-                    .then(literal("query")
-                        .then(argument("radius", IntegerArgumentType.integer(1, 100))
+            register(dispatcher)
+        }
+    }
+
+    private fun register(dispatcher: CommandDispatcher<ServerCommandSource>) {
+        dispatcher.register(
+            literal("pacioli")
+                .requires { it.hasPermissionLevel(2) }
+                // Diagnostic Tools
+                .then(literal("status").executes { if (isDev(it.source)) checkStatus(it.source) else 0 })
+                .then(literal("sweep").executes { if (isDev(it.source)) triggerManualSweep(it.source) else 0 })
+                
+                // Spatial Query Testing
+                .then(literal("query")
+                    .then(argument("radius", IntegerArgumentType.integer(1, 100))
+                        .executes { ctx ->
+                            if (!isDev(ctx.source)) return@executes 0
+                            val radius = IntegerArgumentType.getInteger(ctx, "radius").toDouble()
+                            testQuery(ctx.source, radius)
+                        }
+                    )
+                )
+
+                // AI Stress Testing
+                .then(literal("massspawn")
+                    .then(argument("number", IntegerArgumentType.integer(1, 500))
+                        .then(argument("entity", StringArgumentType.word())
                             .executes { ctx ->
                                 if (!isDev(ctx.source)) return@executes 0
-                                val radius = IntegerArgumentType.getInteger(ctx, "radius")
-                                testQuery(ctx.source, radius.toDouble())
+                                val count = IntegerArgumentType.getInteger(ctx, "number")
+                                val name = StringArgumentType.getString(ctx, "entity")
+                                spawnMass(ctx.source, count, name)
                                 1
                             }
                         )
                     )
-                    .then(literal("massspawn")
-                        .then(argument("number", IntegerArgumentType.integer(1))
-                            .then(argument("entity", StringArgumentType.word())
-                                .executes { ctx ->
-                                    if (!isDev(ctx.source)) return@executes 0
-                                    val count = IntegerArgumentType.getInteger(ctx, "number")
-                                    val name = StringArgumentType.getString(ctx, "entity")
-                                    spawnMass(ctx.source, count, name)
-                                    1
-                                }
-                            )
-                        )
-                    )
-                    .then(literal("breadcrumbs")
-                        .then(literal("enable").executes { if (isDev(it.source)) toggleBreadcrumbs(it.source, true) else 0 })
-                        .then(literal("disable").executes { if (isDev(it.source)) toggleBreadcrumbs(it.source, false) else 0 })
-                        .then(literal("clear").executes { if (isDev(it.source)) clearCache(it.source) else 0 })
-                    )
-            )
-        }
+                )
+
+                // Breadcrumbs Module Control
+                .then(literal("breadcrumbs")
+                    .then(literal("enable").executes { if (isDev(it.source)) toggleBreadcrumbs(it.source, true) else 0 })
+                    .then(literal("disable").executes { if (isDev(it.source)) toggleBreadcrumbs(it.source, false) else 0 })
+                    .then(literal("clear").executes { if (isDev(it.source)) clearCache(it.source) else 0 })
+                )
+        )
     }
 
     fun setEngine(pacioliEngine: PacioliEngine) {
         this.engine = pacioliEngine
     }
 
+    /**
+     * Security: Restricts dangerous engine commands to Singleplayer/Local Integrated servers.
+     */
     private fun isDev(source: ServerCommandSource): Boolean {
         val isDedicated = source.server.isDedicated
         if (isDedicated) {
-            source.sendError(Text.literal("[Pacioli] Error: Dev tools are restricted to local environments."))
+            source.sendError(Text.literal("§c[Pacioli] Access Denied: Dev tools restricted to local environments."))
+            return false
         }
-        return !isDedicated
+        return true
     }
 
     private fun checkStatus(source: ServerCommandSource): Int {
-        val eng = engine
-        if (eng == null) {
-            source.sendError(Text.literal("[Pacioli] Error: Engine instance is null."))
-            return 0
-        }
-        source.sendFeedback({ Text.literal("[Pacioli] Engine: Active | Breadcrumbs: $breadcrumbsEnabled") }, false)
+        val active = engine != null
+        val color = if (active) "§aActive" else "§cInactive"
+        val bcStatus = if (breadcrumbsEnabled) "§aEnabled" else "§7Disabled"
+        
+        source.sendFeedback({ Text.literal("§7[Pacioli] Engine: $color §7| Breadcrumbs: $bcStatus") }, false)
         return 1
     }
 
@@ -87,35 +107,33 @@ object PacioliCommands {
         eng.safetySweep()
         val duration = (System.nanoTime() - startTime) / 1_000_000.0
         
-        source.sendFeedback({ Text.literal("[Pacioli] Sweep: Completed in ${String.format("%.3f", duration)}ms") }, false)
+        source.sendFeedback({ Text.literal("§7[Pacioli] Safety sweep completed in §f${"%.3f".format(duration)}ms") }, false)
         return 1
     }
 
     private fun testQuery(source: ServerCommandSource, radius: Double): Int {
-        val eng = engine
-        if (eng == null) {
-            source.sendError(Text.literal("[Pacioli] Error: Engine not initialized."))
-            return 0
-        }
-        
+        val eng = engine ?: return 0
         val results = ArrayList<Entity>()
+        val pos = source.position
+        
         val startTime = System.nanoTime()
-        eng.getEntitiesInRange(source.position, radius, results)
+        eng.getEntitiesInRange(pos, radius, results)
         val duration = (System.nanoTime() - startTime) / 1_000_000.0
 
-        source.sendFeedback({ Text.literal("[Pacioli] Query: Found ${results.size} entities in ${String.format("%.3f", duration)}ms") }, false)
+        source.sendFeedback({ Text.literal("§7[Pacioli] Query: Found §f${results.size} §7entities in §f${"%.3f".format(duration)}ms") }, false)
         return 1
     }
 
     private fun toggleBreadcrumbs(source: ServerCommandSource, enabled: Boolean): Int {
         breadcrumbsEnabled = enabled
-        source.sendFeedback({ Text.literal("[Pacioli] Breadcrumbs set to $enabled") }, false)
+        val status = if (enabled) "§aEnabled" else "§cDisabled"
+        source.sendFeedback({ Text.literal("§7[Pacioli] Breadcrumbs $status") }, false)
         return 1
     }
 
     private fun clearCache(source: ServerCommandSource): Int {
         engine?.clearCache() ?: return 0
-        source.sendFeedback({ Text.literal("[Pacioli] Cache: Hard reset successful.") }, false)
+        source.sendFeedback({ Text.literal("§7[Pacioli] Spatial cache hard reset successful.") }, false)
         return 1
     }
 
@@ -123,30 +141,28 @@ object PacioliCommands {
         val world = source.world
         val pos = source.position
         
-        val id = Identifier.tryParse(entityName.lowercase())
-        if (id == null) {
-            source.sendError(Text.literal("[Pacioli] Error: Invalid identifier format for '$entityName'"))
+        val id = Identifier.tryParse(entityName.lowercase()) ?: run {
+            source.sendError(Text.literal("§c[Pacioli] Invalid entity name: $entityName"))
             return
         }
         
-        val type = Registries.ENTITY_TYPE.getOrEmpty(id).orElse(null)
-        if (type == null) {
-            source.sendError(Text.literal("[Pacioli] Error: Entity type '$entityName' not found in registry."))
+        val type = Registries.ENTITY_TYPE.getOrEmpty(id).orElse(null) ?: run {
+            source.sendError(Text.literal("§c[Pacioli] Entity '$entityName' not found in registry."))
             return
         }
 
-        val capped = number.coerceAtMost(500)
-        repeat(capped) {
+        repeat(number) {
             val angle = Math.random() * 2 * Math.PI
-            val radius = Math.random() * 8.0
-            val spawnPos = pos.add(Math.cos(angle) * radius, 1.0, Math.sin(angle) * radius)
+            val dist = Math.random() * 8.0
+            val spawnPos = Vec3d(pos.x + Math.cos(angle) * dist, pos.y + 1.0, pos.z + Math.sin(angle) * dist)
 
             type.create(world)?.let { entity ->
                 entity.refreshPositionAndAngles(spawnPos.x, spawnPos.y, spawnPos.z, 0f, 0f)
-                entity.deltaMovement = Vec3((Math.random() - 0.5) * 1.5, 0.3, (Math.random() - 0.5) * 1.5)
+                // Random velocity "explosion" to test spatial update frequency
+                entity.velocity = Vec3d((Math.random() - 0.5) * 1.5, 0.3, (Math.random() - 0.5) * 1.5)
                 world.spawnEntity(entity)
             }
         }
-        source.sendFeedback({ Text.literal("[Pacioli] Spawn: Successfully summoned $capped entities.") }, false)
+        source.sendFeedback({ Text.literal("§7[Pacioli] Successfully summoned §f$number §7entities for testing.") }, false)
     }
 }
