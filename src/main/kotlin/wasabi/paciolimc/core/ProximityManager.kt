@@ -1,84 +1,80 @@
 package wasabi.paciolimc.proximity
 
 import net.minecraft.world.entity.Entity
-import net.minecraft.world.phys.Vec3
 import wasabi.paciolimc.engine.PacioliEngine
-import wasabi.paciolimc.logger.PacioliLog
-import java.util.HashMap
 import java.util.HashSet
 
 /**
- * Pacioli Proximity Manager - Alpha 1.4.7
- * Logic: Radial Hysteresis (Entry: 16m, Exit: 20m)
+ * Pacioli Proximity Manager - Alpha 1.5.5
+ * milestone: Hardened Core
+ * Logic: Staggered Evaluation & Interface Decoupling
  */
 class ProximityManager(
     private val engine: PacioliEngine,
-    private val filter: (Entity) -> Boolean 
+    private val filter: (Entity) -> Boolean,
+    private val listener: TrackingListener? = null 
 ) {
-
-    private val ENTRY_RADIUS = 16.0
-    private val EXIT_RADIUS = 20.0 
-    private val ENTRY_SQR = ENTRY_RADIUS * ENTRY_RADIUS
-    private val EXIT_SQR = EXIT_RADIUS * EXIT_RADIUS
+    private val ENTRY_SQR = 256.0 
+    private val EXIT_SQR = 400.0  
 
     private val trackedStates = HashMap<Int, MutableSet<Int>>()
     private val candidateBuffer = mutableListOf<Entity>()
+    private val nextTickBuffer = HashSet<Int>()
 
     fun update(observer: Entity) {
         val obsId = observer.id
-        val obsPos = observer.position() // ⚡ Micro-opt: Cache position once
-        
+        val obsPos = observer.position()
         val currentlyTracked = trackedStates.getOrPut(obsId) { HashSet() }
         
         candidateBuffer.clear()
-        engine.getEntitiesInRange(obsPos, EXIT_RADIUS, candidateBuffer)
+        engine.getCandidateBufferBroadPhase(obsPos, candidateBuffer)
 
-        val nextTickTracked = HashSet<Int>(currentlyTracked.size + 8)
+        nextTickBuffer.clear()
 
         for (i in 0 until candidateBuffer.size) {
             val target = candidateBuffer[i]
             val targetId = target.id
             if (targetId == obsId) continue
 
-            val distSqr = target.distanceToSqr(obsPos) 
             val isAlreadyTracked = currentlyTracked.contains(targetId)
+            val distSqr = target.distanceToSqr(obsPos)
 
             if (isAlreadyTracked) {
-                // Stay tracked until they cross the OUTER (20m) boundary
                 if (distSqr <= EXIT_SQR) {
-                    nextTickTracked.add(targetId)
+                    nextTickBuffer.add(targetId)
+                    
+                    // Staggered load balancing to prevent CPU spikes
+                    if ((targetId + obsId) % 10 == 0) {
+                        listener?.onVitals(target)
+                    }
                 }
-            } else {
-                // Only start tracking if they hit the INNER (16m) boundary AND pass filter
-                if (distSqr <= ENTRY_SQR && filter(target)) {
-                    nextTickTracked.add(targetId)
-                    onEnter(observer, target)
-                }
+            } else if (distSqr <= ENTRY_SQR && filter(target)) {
+                nextTickBuffer.add(targetId)
+                listener?.onEnter(observer, target)
             }
         }
-
-        // CLEANUP: Fire exit events for anyone no longer in range
+        
+        // Reconciliation
         val iterator = currentlyTracked.iterator()
         while (iterator.hasNext()) {
             val id = iterator.next()
-            if (!nextTickTracked.contains(id)) {
-                onExit(observer, id)
-                iterator.remove()
+            if (!nextTickBuffer.contains(id)) {
+                listener?.onExit(observer, id)
+                iterator.remove() 
             }
         }
-
-        currentlyTracked.addAll(nextTickTracked)
+        
+        currentlyTracked.addAll(nextTickBuffer)
     }
 
-    private fun onEnter(observer: Entity, target: Entity) {
-        PacioliLog.info("PROXIMITY", "[${observer.id}] started tracking [${target.id}]")
-    }
+    fun purgeObserver(observerId: Int) = trackedStates.remove(observerId)
+}
 
-    private fun onExit(observer: Entity, targetId: Int) {
-        PacioliLog.info("PROXIMITY", "[${observer.id}] lost track of [$targetId]")
-    }
-
-    fun purgeObserver(observerId: Int) {
-        trackedStates.remove(observerId)
-    }
+/**
+ * Decoupling Interface for external logic
+ */
+interface TrackingListener {
+    fun onEnter(observer: Entity, target: Entity)
+    fun onExit(observer: Entity, targetId: Int)
+    fun onVitals(target: Entity)
 }
