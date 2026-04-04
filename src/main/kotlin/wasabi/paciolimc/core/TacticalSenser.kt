@@ -1,60 +1,64 @@
 package wasabi.paciolimc.proximity
 
 import net.minecraft.world.entity.Entity
-import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.phys.Vec3
 import wasabi.paciolimc.engine.PacioliEngine
 import java.util.ArrayList
 
 /**
- * Pacioli Tactical Scanner - Alpha 1.4.7
- * High-performance spatial queries with Zero-Allocation buffers.
+ * Spatial queries with reusable buffers. Player centroid uses **only** cached [TrackingMetadata]
+ * (no live [Entity] position reads on the hot path).
  */
 class TacticalScanner(private val engine: PacioliEngine) {
 
-    private val rawBuffer = mutableListOf<Entity>()
+    private val idBuffer = ArrayList<Int>(512)
     private val resultBuffer = ArrayList<Entity>()
 
-    /**
-     * Calculates the "Center of Mass" for all active players in a radius.
-     * Use for: Centering boss arenas or group-scaled difficulty.
-     */
     fun getPlayerCentroid(origin: Vec3, radius: Double): Vec3? {
-        rawBuffer.clear()
-        engine.getEntitiesInRange(origin, radius, rawBuffer)
-        
-        var tx = 0.0; var ty = 0.0; var tz = 0.0
+        idBuffer.clear()
+        engine.collectEntityIdsInRange(origin, radius, idBuffer)
+
+        var tx = 0.0
+        var ty = 0.0
+        var tz = 0.0
         var count = 0
 
-        for (i in 0 until rawBuffer.size) {
-            val e = rawBuffer[i]
-            if (e is ServerPlayer && !e.isSpectator) {
-                tx += e.x; ty += e.y; tz += e.z
-                count++
-            }
+        for (i in 0 until idBuffer.size) {
+            val id = idBuffer[i]
+            val meta = engine.trackingMetadata(id) ?: continue
+            if (!meta.initialized || !meta.isServerPlayer || meta.spectator) continue
+            tx += meta.currX
+            ty += meta.currY
+            tz += meta.currZ
+            count++
         }
 
         return if (count > 0) Vec3(tx / count, ty / count, tz / count) else null
     }
 
     /**
-     * Identifies entities matching a filter and passes them to a safe scope.
-     * 🛡️ SAFETY: Result list is only valid WITHIN the [action] block.
+     * Resolves [Entity] only for the final filtered list (custom [filter] may need type checks).
      */
-    fun forEachMatching(origin: Vec3, radius: Double, filter: (Entity) -> Boolean, action: (List<Entity>) -> Unit) {
-        rawBuffer.clear()
+    fun forEachMatching(
+        origin: Vec3,
+        radius: Double,
+        filter: (Entity) -> Boolean,
+        action: (List<Entity>) -> Unit
+    ) {
+        idBuffer.clear()
         resultBuffer.clear()
-        
-        engine.getEntitiesInRange(origin, radius, rawBuffer)
 
-        for (i in 0 until rawBuffer.size) {
-            val e = rawBuffer[i]
+        engine.collectEntityIdsInRange(origin, radius, idBuffer)
+
+        for (i in 0 until idBuffer.size) {
+            val id = idBuffer[i]
+            val e = engine.level.getEntity(id) ?: continue
             if (filter(e)) {
                 resultBuffer.add(e)
             }
         }
 
         action(resultBuffer)
-        resultBuffer.clear() // Defensive wipe
+        resultBuffer.clear()
     }
 }

@@ -3,7 +3,7 @@
 	"id": "pacioli",
 	"version": "${version}",
 	"name": "Pacioli",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"description": "High-performance spatial + tracking library for Fabric 26.1 (JDK 25): cached entity snapshots, chunk AI grid, Loom/Panama hooks.",
 	"authors": [
 		"Me!"
 	],

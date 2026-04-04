@@ -1,15 +1,58 @@
 package wasabi.paciolimc.api
 
+import net.minecraft.server.level.ServerLevel
 import net.minecraft.core.registries.BuiltInRegistries
 import net.minecraft.world.entity.Entity
 import net.minecraft.world.entity.boss.wither.WitherBoss
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon
+import wasabi.paciolimc.engine.PacioliEngine
 import wasabi.paciolimc.logger.PacioliLog
+import wasabi.paciolimc.engine.EntityTrackingSnapshot
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ConcurrentHashMap
+import java.util.function.Consumer
 import java.util.function.Predicate
 
+/**
+ * Stable entry for dependent mods. Spatial engine state is owned by [PacioliEngine]: **do not mutate**
+ * engines, tracking maps, or snapshots from virtual threads or off the server game thread unless a
+ * method explicitly documents otherwise.
+ */
 object PacioliAPI {
+
+    @JvmStatic
+    fun engineFor(level: ServerLevel): PacioliEngine = PacioliEngine.forLevel(level)
+
+    /**
+     * Immutable tracking row after the engine tick for this level. `null` if the entity was not tracked this tick.
+     */
+    @JvmStatic
+    fun trackingSnapshot(level: ServerLevel, entityId: Int): EntityTrackingSnapshot? =
+        engineFor(level).trackingSnapshot(entityId)
+
+    private val postTickHooks = CopyOnWriteArrayList<Consumer<ServerLevel>>()
+
+    /** Runs on the server thread immediately after snapshot → derive → commit for [level]. */
+    @JvmStatic
+    fun registerPostTickHook(consumer: Consumer<ServerLevel>) {
+        postTickHooks.add(consumer)
+    }
+
+    @JvmStatic
+    fun unregisterPostTickHook(consumer: Consumer<ServerLevel>) {
+        postTickHooks.remove(consumer)
+    }
+
+    @JvmStatic
+    fun dispatchPostTickHooks(level: ServerLevel) {
+        for (hook in postTickHooks) {
+            try {
+                hook.accept(level)
+            } catch (t: Throwable) {
+                PacioliLog.error("API", "Post-tick hook failed", t)
+            }
+        }
+    }
 
     private val externalBossPredicates = CopyOnWriteArrayList<Predicate<Entity>>()
     private val explicitBossIds = ConcurrentHashMap.newKeySet<Int>()
@@ -66,7 +109,7 @@ object PacioliAPI {
         }
 
         // 5. Tags (Fallback - Lowest Priority)
-        if (entity.commandTags.contains("pacioli:boss")) return true
+        if (entity.entityTags().contains("pacioli:boss")) return true
 
         return false
     }

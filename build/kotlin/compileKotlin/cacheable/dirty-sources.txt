@@ -1,0 +1,11 @@
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/engine/TrackingMetadata.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/core/TacticalSenser.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/concurrent/PacioliAsync.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/core/PacioliCommands.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/engine/PacioliEngine.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/Pacioli.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/core/PacioliAPI.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/engine/EntityTrackingSnapshot.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/core/ProximityManager.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/engine/EngineBits.kt
+/home/Wasabi/VSCodium/pacioli-mc/src/main/kotlin/wasabi/paciolimc/core/PacioliLog.kt
